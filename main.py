@@ -1,7 +1,22 @@
 import ctypes
+import os
 import cv2
+import numpy as np
 import pyautogui
 import mediapipe as mp
+from PIL import Image, ImageDraw, ImageFont
+
+_kr_font = ImageFont.truetype("C:/Windows/Fonts/malgun.ttf", 24)
+
+
+def put_text_kr(frame, text, pos, color_bgr):
+    # cv2.putText는 한글 못 그림(?????) → PIL로 그려서 되돌림
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil = Image.fromarray(rgb)
+    draw = ImageDraw.Draw(pil)
+    b, g, r = color_bgr
+    draw.text(pos, text, font=_kr_font, fill=(r, g, b))
+    return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
@@ -12,30 +27,8 @@ def ctrl_space_pressed():
     return ctrl and space
 
 
-def merge_boxes(boxes, iou_threshold=0.3):
-    merged = []
-    for box in boxes:
-        x, y, w, h = box
-        duplicate = False
-        for mx, my, mw, mh in merged:
-            ix1 = max(x, mx)
-            iy1 = max(y, my)
-            ix2 = min(x + w, mx + mw)
-            iy2 = min(y + h, my + mh)   
-            iw = max(0, ix2 - ix1)
-            ih = max(0, iy2 - iy1)
-            inter = iw * ih
-            union = w * h + mw * mh - inter
-            if union > 0 and inter / union > iou_threshold:
-                duplicate = True
-                break
-        if not duplicate:
-            merged.append((x, y, w, h))
-    return merged
-
-
 def count_fingers(lm):
-    count = 0
+    count = 0 
 
     margin = 0.03
 
@@ -50,7 +43,53 @@ def count_fingers(lm):
     return count
 
 
-face_cascade = cv2.CascadeClassifier("face.xml")
+def read_unicode(path):
+    # cv2.imread는 한글 경로(얼굴인식) 못 읽음 → fromfile + imdecode로 우회
+    data = np.fromfile(path, dtype=np.uint8)
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def build_face_db(root="faces_db"):
+    # faces_db/<이름>/*.jpg 순회 → 사람별 얼굴 embedding 목록 저장
+    db = {}
+    if not os.path.isdir(root):
+        return db
+    for name in os.listdir(root):
+        person_dir = os.path.join(root, name)
+        if not os.path.isdir(person_dir):
+            continue
+        feats = []
+        for fn in os.listdir(person_dir):
+            img = read_unicode(os.path.join(person_dir, fn))
+            if img is None:
+                continue
+            ih, iw = img.shape[:2]
+            yunet.setInputSize((iw, ih))
+            _, fs = yunet.detect(img)
+            if fs is None:
+                continue
+            f = max(fs, key=lambda r: r[2] * r[3])  # 가장 큰 얼굴
+            aligned = recognizer.alignCrop(img, f)
+            feats.append(recognizer.feature(aligned))
+        if feats:
+            db[name] = feats
+            print("enrolled " + name + ": " + str(len(feats)) + " faces")
+    return db
+
+
+def identify(frame, face_row):
+    # 얼굴 1개 → embedding → 등록 DB와 코사인 비교 → (이름, 점수)
+    aligned = recognizer.alignCrop(frame, face_row)
+    feat = recognizer.feature(aligned)
+    best_name, best_score = "Unknown", 0.0
+    for name, feats in face_db.items():
+        for f in feats:
+            s = recognizer.match(feat, f, cv2.FaceRecognizerSF_FR_COSINE)
+            if s > best_score:
+                best_score, best_name = s, name
+    label = best_name if best_score > COSINE_THRESHOLD else "Unknown"
+    return label, best_score
+
 
 yunet = cv2.FaceDetectorYN.create(
     "face_detection_yunet_2023mar.onnx",
@@ -58,6 +97,15 @@ yunet = cv2.FaceDetectorYN.create(
     (320, 320),
     score_threshold=0.6,
 )
+
+recognizer = cv2.FaceRecognizerSF.create(
+    "face_recognition_sface_2021dec.onnx",
+    "",
+)
+COSINE_THRESHOLD = 0.45  # 다른사람 최대 0.411 위 + 라이브 변동 여유. 본인 놓치면 0.42까지 내려도 됨
+
+face_db = build_face_db()
+print("DB people: " + str(list(face_db.keys())))
 
 with open("hand_landmarker.task", "rb") as _f:
     _hand_model = _f.read()
@@ -73,7 +121,6 @@ hand_landmarker = vision.HandLandmarker.create_from_options(
 
 camera = cv2.VideoCapture(0)
 
-faces = []
 alt_tab_done = False
 reset_key_pressed = False
 
@@ -88,32 +135,23 @@ while True:
         break
 
     h, w = frame.shape[:2]
-    boxes = []
+    recognized = []  # (box, name) — YuNet 얼굴만 (landmark 있어야 인식 가능)
 
     yunet.setInputSize((w, h))
     _, yn_faces = yunet.detect(frame)
     if yn_faces is not None:
         for f in yn_faces:
             bx, by, bw, bh = f[:4].astype(int)
-            boxes.append((bx, by, bw, bh))
+            name, score = identify(frame, f)
+            recognized.append(((bx, by, bw, bh), name, score))
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.equalizeHist(gray)
-    haar_faces = face_cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=4,
-        minSize=(60, 60),
-    )
-    for x, y, fw, fh in haar_faces:
-        boxes.append((int(x), int(y), int(fw), int(fh)))
+    face_count = len(recognized)
 
-    faces = merge_boxes(boxes)
-
-    face_count = len(faces)
-
-    for x, y, fw, fh in faces:
-        cv2.rectangle(frame, (x, y), (x + fw, y + fh), (0, 255, 0), 2)
+    for (x, y, fw, fh), name, score in recognized:
+        known = name != "Unknown"
+        color = (0, 255, 0) if known else (0, 0, 255)  # 등록=초록, 모름=빨강
+        cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
+        frame = put_text_kr(frame, name + " " + str(round(score, 2)), (x, y - 30), color)
 
     cv2.putText(
         frame,
@@ -159,7 +197,8 @@ while True:
     if not ctrl_space_pressed():
         reset_key_pressed = False
 
-    if face_count >= 2 and alt_tab_done == False:
+    unknown_present = any(name == "Unknown" for _, name, _ in recognized)
+    if unknown_present and alt_tab_done == False:
         pyautogui.hotkey("alt", "tab")
         alt_tab_done = True
 
