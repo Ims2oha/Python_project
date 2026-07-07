@@ -5,20 +5,19 @@ import numpy as np
 import pyautogui
 import mediapipe as mp
 from PIL import Image, ImageDraw, ImageFont
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
 
 _kr_font = ImageFont.truetype("C:/Windows/Fonts/malgun.ttf", 24)
 
 
 def put_text_kr(frame, text, pos, color_bgr):
-    # cv2.putText는 한글 못 그림(?????) → PIL로 그려서 되돌림
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(rgb)
     draw = ImageDraw.Draw(pil)
     b, g, r = color_bgr
     draw.text(pos, text, font=_kr_font, fill=(r, g, b))
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision
 
 
 def ctrl_space_pressed():
@@ -44,13 +43,11 @@ def count_fingers(lm):
 
 
 def read_unicode(path):
-    # cv2.imread는 한글 경로(얼굴인식) 못 읽음 → fromfile + imdecode로 우회
     data = np.fromfile(path, dtype=np.uint8)
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
 def build_face_db(root="faces_db"):
-    # faces_db/<이름>/*.jpg 순회 → 사람별 얼굴 embedding 목록 저장
     db = {}
     if not os.path.isdir(root):
         return db
@@ -68,7 +65,7 @@ def build_face_db(root="faces_db"):
             _, fs = yunet.detect(img)
             if fs is None:
                 continue
-            f = max(fs, key=lambda r: r[2] * r[3])  # 가장 큰 얼굴
+            f = max(fs, key=lambda r: r[2] * r[3])
             aligned = recognizer.alignCrop(img, f)
             feats.append(recognizer.feature(aligned))
         if feats:
@@ -78,7 +75,6 @@ def build_face_db(root="faces_db"):
 
 
 def identify(frame, face_row):
-    # 얼굴 1개 → embedding → 등록 DB와 코사인 비교 → (이름, 점수)
     aligned = recognizer.alignCrop(frame, face_row)
     feat = recognizer.feature(aligned)
     best_name, best_score = "Unknown", 0.0
@@ -102,7 +98,7 @@ recognizer = cv2.FaceRecognizerSF.create(
     "face_recognition_sface_2021dec.onnx",
     "",
 )
-COSINE_THRESHOLD = 0.45  # 다른사람 최대 0.411 위 + 라이브 변동 여유. 본인 놓치면 0.42까지 내려도 됨
+COSINE_THRESHOLD = 0.45
 
 face_db = build_face_db()
 print("DB people: " + str(list(face_db.keys())))
@@ -135,7 +131,7 @@ while True:
         break
 
     h, w = frame.shape[:2]
-    recognized = []  # (box, name) — YuNet 얼굴만 (landmark 있어야 인식 가능)
+    recognized = []
 
     yunet.setInputSize((w, h))
     _, yn_faces = yunet.detect(frame)
@@ -149,7 +145,7 @@ while True:
 
     for (x, y, fw, fh), name, score in recognized:
         known = name != "Unknown"
-        color = (0, 255, 0) if known else (0, 0, 255)  # 등록=초록, 모름=빨강
+        color = (0, 255, 0) if known else (0, 0, 255)
         cv2.rectangle(frame, (x, y), (x + fw, y + fh), color, 2)
         frame = put_text_kr(frame, name + " " + str(round(score, 2)), (x, y - 30), color)
 

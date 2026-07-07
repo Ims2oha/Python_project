@@ -2,12 +2,10 @@ import os
 import cv2
 import numpy as np
 
-# 등록할 사람 이름 (실행 시 물어봄)
 person = input("등록할 사람 이름: ").strip()
 save_dir = os.path.join("faces_db", person)
 os.makedirs(save_dir, exist_ok=True)
 
-# 기존 파일 개수부터 이어서 번호 매김
 start = len([f for f in os.listdir(save_dir) if f.lower().endswith(".jpg")])
 
 yunet = cv2.FaceDetectorYN.create(
@@ -51,7 +49,6 @@ while True:
     key = cv2.waitKey(1) & 0xFF
 
     if key == ord(" ") and face_ok:
-        # 한글 경로 저장은 imencode + tofile
         path = os.path.join(save_dir, "cap_" + str(start + count) + ".jpg")
         cv2.imencode(".jpg", frame)[1].tofile(path)
         count += 1
